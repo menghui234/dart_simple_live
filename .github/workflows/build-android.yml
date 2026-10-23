@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       build_type:
-        description: "Select APK build type"
+        description: Select APK build type
         required: true
         type: choice
         default: debug
@@ -16,78 +16,81 @@ on:
 permissions:
   contents: read
 
+env:
+  ANDROID_API_LEVEL: '36'
+  ANDROID_BUILD_TOOLS_VERSION: '35.0.0'
+  ANDROID_NDK_VERSION: '28.2.13676358'
+
 jobs:
   build:
-    runs-on: ubuntu-22.04
-
+    runs-on: ubuntu-24.04
     defaults:
       run:
         shell: bash
 
     steps:
-      # 1. Checkout source
       - name: Checkout source
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
-      # 2. Setup Java
       - name: Setup Java 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: zulu
           java-version: '17'
+          cache: gradle
 
-      # 3. Setup Flutter
-      - name: Setup Flutter
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: >-
+            platform-tools
+            platforms;android-${{ env.ANDROID_API_LEVEL }}
+            build-tools;${{ env.ANDROID_BUILD_TOOLS_VERSION }}
+            ndk;${{ env.ANDROID_NDK_VERSION }}
+
+      - name: Setup Flutter from author's .fvmrc
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.38.3'
           channel: stable
+          flutter-version-file: simple_live_app/.fvmrc
           cache: true
 
-      # 4. Fix incompatible dependency
-      - name: Fix auto_orientation_v2 version
+      - name: Configure Flutter to use Java 17
+        run: flutter config --jdk-dir "$JAVA_HOME"
+
+      - name: Pin Android-compatible plugin versions
         run: |
-          set -e
+          set -euo pipefail
+          sed -i -E 's/^([[:space:]]*auto_orientation_v2:)[[:space:]]*[^[:space:]#]+/\1 2.3.8/' simple_live_app/pubspec.yaml
+          sed -i -E 's/^([[:space:]]*dynamic_color:)[[:space:]]*[^[:space:]#]+/\1 1.8.1/' simple_live_app/pubspec.yaml
 
-          sed -i \
-            's/auto_orientation_v2: \^2\.3\.6/auto_orientation_v2: 2.3.8/' \
-            simple_live_app/pubspec.yaml
+          grep -Eq '^[[:space:]]*auto_orientation_v2:[[:space:]]*2\.3\.8([[:space:]]|$)' simple_live_app/pubspec.yaml
+          grep -Eq '^[[:space:]]*dynamic_color:[[:space:]]*1\.8\.1([[:space:]]|$)' simple_live_app/pubspec.yaml
 
-          grep -Eq \
-            '^[[:space:]]*auto_orientation_v2:[[:space:]]*2\.3\.8([[:space:]]|$)' \
-            simple_live_app/pubspec.yaml
+          grep -E '^[[:space:]]*(auto_orientation_v2|dynamic_color):' simple_live_app/pubspec.yaml
 
-          echo "Pinned auto_orientation_v2 to 2.3.8"
-
-      # 5. Install dependencies
-      - name: Install dependencies
+      - name: Restore Flutter packages
         working-directory: simple_live_app
         run: |
           flutter pub get
-          flutter pub deps --style=compact | grep 'auto_orientation_v2'
+          flutter pub deps --style=compact | grep -E 'auto_orientation_v2|dynamic_color'
 
-      # 6. Prepare Debug signing
-      - name: Prepare Debug signing
+      - name: Prepare temporary Debug signing
         if: inputs.build_type == 'debug'
         run: |
-          set -e
+          set -euo pipefail
 
           keytool -genkeypair \
             -keystore simple_live_app/android/app/ci-debug.jks \
             -storetype PKCS12 \
             -alias ci-debug \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 3650 \
-            -storepass android \
-            -keypass android \
+            -keyalg RSA -keysize 2048 -validity 3650 \
+            -storepass android -keypass android \
             -dname "CN=CI, OU=CI, O=CI, L=CI, ST=CI, C=US" \
             -noprompt
 
-          printf 'keyAlias=ci-debug\nkeyPassword=android\nstoreFile=ci-debug.jks\nstorePassword=android\n' \
-            > simple_live_app/android/key.properties
+          printf 'keyAlias=ci-debug\nkeyPassword=android\nstoreFile=ci-debug.jks\nstorePassword=android\n' > simple_live_app/android/key.properties
 
-      # 7. Prepare Release signing
       - name: Prepare Release signing
         if: inputs.build_type == 'release'
         env:
@@ -98,42 +101,36 @@ jobs:
         run: |
           set -euo pipefail
 
-          for var in KEYSTORE_BASE64 STORE_PASSWORD KEY_PASSWORD KEY_ALIAS; do
-            if [ -z "${!var:-}" ]; then
-              echo "::error::Missing secret: $var"
+          for secret in KEYSTORE_BASE64 STORE_PASSWORD KEY_PASSWORD KEY_ALIAS; do
+            if [[ -z "${!secret:-}" ]]; then
+              echo "::error::Missing secret: $secret"
               exit 1
             fi
           done
 
-          printf '%s' "$KEYSTORE_BASE64" \
-            | base64 --decode \
-            > simple_live_app/android/app/keystore.jks
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > simple_live_app/android/app/ci-release.jks
 
           {
-            echo "storeFile=keystore.jks"
-            echo "storePassword=$STORE_PASSWORD"
-            echo "keyPassword=$KEY_PASSWORD"
-            echo "keyAlias=$KEY_ALIAS"
+            printf 'storeFile=ci-release.jks\n'
+            printf 'storePassword=%s\n' "$STORE_PASSWORD"
+            printf 'keyPassword=%s\n' "$KEY_PASSWORD"
+            printf 'keyAlias=%s\n' "$KEY_ALIAS"
           } > simple_live_app/android/key.properties
 
-          chmod 600 simple_live_app/android/key.properties
-          chmod 600 simple_live_app/android/app/keystore.jks
+          chmod 600 simple_live_app/android/app/ci-release.jks simple_live_app/android/key.properties
 
-      # 8. Build Debug APK
       - name: Build Debug APK
         if: inputs.build_type == 'debug'
         working-directory: simple_live_app
         run: flutter build apk --debug
 
-      # 9. Build Release APK
       - name: Build Release APK
         if: inputs.build_type == 'release'
         working-directory: simple_live_app
         run: flutter build apk --release --split-per-abi
 
-      # 10. Upload APK
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v7
         with:
           name: SimpleLive-${{ inputs.build_type }}-APK
           path: simple_live_app/build/app/outputs/flutter-apk/*.apk
