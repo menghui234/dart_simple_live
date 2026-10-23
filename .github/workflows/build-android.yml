@@ -25,8 +25,7 @@ jobs:
         shell: bash
 
     steps:
-
-      # 1. Checkout repository
+      # 1. Checkout source
       - name: Checkout source
         uses: actions/checkout@v5
 
@@ -45,14 +44,27 @@ jobs:
           channel: stable
           cache: true
 
-      # 4. Check Flutter environment
-      - name: Check Flutter environment
-        run: flutter doctor -v
+      # 4. Fix incompatible dependency
+      - name: Fix auto_orientation_v2 version
+        run: |
+          set -e
+
+          sed -i \
+            's/auto_orientation_v2: \^2\.3\.6/auto_orientation_v2: 2.3.8/' \
+            simple_live_app/pubspec.yaml
+
+          grep -Eq \
+            '^[[:space:]]*auto_orientation_v2:[[:space:]]*2\.3\.8([[:space:]]|$)' \
+            simple_live_app/pubspec.yaml
+
+          echo "Pinned auto_orientation_v2 to 2.3.8"
 
       # 5. Install dependencies
       - name: Install dependencies
         working-directory: simple_live_app
-        run: flutter pub get
+        run: |
+          flutter pub get
+          flutter pub deps --style=compact | grep 'auto_orientation_v2'
 
       # 6. Prepare Debug signing
       - name: Prepare Debug signing
