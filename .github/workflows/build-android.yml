@@ -1,3 +1,20 @@
+ - name: Prepare temporary signing for Debug
+        if: inputs.build_type == 'debug'
+        run: |
+          keytool -genkeypair \
+            -keystore simple_live_app/android/app/ci-temp.jks \
+            -storetype PKCS12 \
+            -alias ci-temp \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 3650 \
+            -storepass android \
+            -keypass android \
+            -dname "CN=CI, OU=CI, O=CI, L=CI, ST=CI, C=US" \
+            -noprompt
+
+          printf 'storeFile=ci-temp.jks\nstorePassword=android\nkeyPassword=android\nkeyAlias=ci-temp\n' \
+            > simple_live_app/android/key.properties
 
 name: Build Android APK
 
